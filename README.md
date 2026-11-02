@@ -2,7 +2,7 @@
 
 **比赛期间，队里所有“谁解了、谁占了、写到哪了”都在一块黑板上。**
 
-[![release](https://img.shields.io/github/v/release/guaidao2/ctf-blackboard?color=5ee6b0&label=release)](https://github.com/guaidao2/ctf-blackboard/releases)
+[![release](https://img.shields.io/github/v/release/guaidao2/ctf-blackboard?color=5ee6b0&label=release&cacheSeconds=3600)](https://github.com/guaidao2/ctf-blackboard/releases)
 [![license](https://img.shields.io/github/license/guaidao2/ctf-blackboard?color=5ee6b0)](LICENSE)
 [![go](https://img.shields.io/github/go-mod/go-version/guaidao2/ctf-blackboard?color=5ee6b0)](go.mod)
 
