@@ -46,11 +46,12 @@ type Config struct {
 
 // Client is an authenticated, encrypted connection to the blackboard.
 type Client struct {
-	conn    *websocket.Conn
-	send    *secure.FrameCipher
-	recv    *secure.FrameCipher
-	events  func(protocol.Envelope)
-	onClose func(error)
+	conn   *websocket.Conn
+	send   *secure.FrameCipher
+	recv   *secure.FrameCipher
+	events func(protocol.Envelope)
+
+	assembler protocol.Assembler
 
 	writeMu sync.Mutex
 	pendMu  sync.Mutex
@@ -268,10 +269,19 @@ func (c *Client) RequestRaw(cmd string, argRaw json.RawMessage, timeout time.Dur
 	}()
 
 	c.writeMu.Lock()
-	frame, err := c.send.Seal(raw)
+	frames, err := protocol.SplitLimit(raw, protocol.ClientRequestMax)
 	if err == nil {
-		_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
-		err = c.conn.WriteMessage(websocket.BinaryMessage, frame)
+		for _, frameRaw := range frames {
+			var frame []byte
+			frame, err = c.send.Seal(frameRaw)
+			if err != nil {
+				break
+			}
+			_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err = c.conn.WriteMessage(websocket.BinaryMessage, frame); err != nil {
+				break
+			}
+		}
 	}
 	c.writeMu.Unlock()
 	if err != nil {
@@ -340,8 +350,16 @@ func (c *Client) readLoop() {
 			closeErr = fmt.Errorf("解密失败：%w", err)
 			return
 		}
+		message, complete, err := c.assembler.Add(plain)
+		if err != nil {
+			closeErr = fmt.Errorf("分片重组失败：%w", err)
+			return
+		}
+		if !complete {
+			continue
+		}
 		var env protocol.Envelope
-		if err := json.Unmarshal(plain, &env); err != nil {
+		if err := json.Unmarshal(message, &env); err != nil {
 			closeErr = fmt.Errorf("协议格式错误：%w", err)
 			return
 		}

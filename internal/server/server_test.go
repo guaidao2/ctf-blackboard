@@ -19,8 +19,10 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/guaidao2/ctf-blackboard/internal/model"
 	"github.com/guaidao2/ctf-blackboard/internal/protocol"
 	"github.com/guaidao2/ctf-blackboard/internal/secure"
+	"github.com/guaidao2/ctf-blackboard/internal/store"
 )
 
 const testPassword = "correct-horse-battery-staple"
@@ -68,6 +70,7 @@ type testPeer struct {
 	closeOnce sync.Once
 	nextID    atomic.Uint64
 	snapshot  protocol.Snapshot
+	assembler protocol.Assembler
 }
 
 func dialPeer(t *testing.T, info Info, nick, password string) (*testPeer, error) {
@@ -232,8 +235,15 @@ func (p *testPeer) readLoop() {
 		if err != nil {
 			return
 		}
+		message, complete, err := p.assembler.Add(plain)
+		if err != nil {
+			return
+		}
+		if !complete {
+			continue
+		}
 		var env protocol.Envelope
-		if err := json.Unmarshal(plain, &env); err != nil {
+		if err := json.Unmarshal(message, &env); err != nil {
 			return
 		}
 		switch env.Type {
@@ -649,5 +659,102 @@ func TestSettingsUpdateIsAtomic(t *testing.T) {
 	}
 	if snap.Settings.TotalChallenges != 2 || snap.Settings.SlotLimit != 1 {
 		t.Fatalf("partial settings update leaked: %+v", snap.Settings)
+	}
+}
+
+func TestLoginLimiterReservesAttempts(t *testing.T) {
+	l := newLoginLimiter(2, 2, time.Minute, time.Minute)
+	if ok, _ := l.begin("ip"); !ok {
+		t.Fatal("first attempt rejected")
+	}
+	if ok, _ := l.begin("ip"); !ok {
+		t.Fatal("second attempt rejected")
+	}
+	if ok, _ := l.begin("ip"); ok {
+		t.Fatal("third concurrent attempt was allowed before budget settled")
+	}
+	l.fail("ip")
+	l.fail("ip")
+	if ok, _ := l.begin("ip"); ok {
+		t.Fatal("blocked limiter allowed another attempt")
+	}
+
+	l2 := newLoginLimiter(1, 1, time.Minute, time.Minute)
+	if ok, _ := l2.begin("ip"); !ok {
+		t.Fatal("first reservation failed")
+	}
+	l2.cancel("ip")
+	if ok, _ := l2.begin("ip"); !ok {
+		t.Fatal("cancel did not release the reservation")
+	}
+}
+
+func TestLargeSnapshotIsFragmented(t *testing.T) {
+	dir := t.TempDir()
+	settings := model.Settings{ServerName: "large", SlotLimit: 1000, TotalChallenges: 10000}
+	bd, st, _, err := store.Open(dir, settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	long := strings.Repeat("x", 80)
+	for i := 0; i < 6000; i++ {
+		st.Solvers = append(st.Solvers, &model.Solver{
+			ID: fmt.Sprintf("s%d", i), Challenge: long, Nick: fmt.Sprintf("operator-%d", i),
+			CreatedAt: now, UpdatedAt: now,
+		})
+	}
+	for i := 0; i < 3000; i++ {
+		st.Slots = append(st.Slots, &model.Slot{
+			ID: fmt.Sprintf("r%d", i), Challenge: long, Owner: "operator",
+			Status: model.SlotReleased, CreatedAt: now, ReleasedAt: now,
+		})
+	}
+	if err := bd.Save(st); err != nil {
+		t.Fatal(err)
+	}
+
+	_, info := startTestServer(t, testConfig(dir))
+	alice, err := dialPeer(t, info, "alice", testPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer alice.close()
+	if len(alice.snapshot.Solvers) != 6000 {
+		t.Fatalf("snapshot solvers = %d, want 6000", len(alice.snapshot.Solvers))
+	}
+	if len(alice.snapshot.Slots) != 3000 {
+		t.Fatalf("snapshot slots = %d, want 3000", len(alice.snapshot.Slots))
+	}
+
+	// state.get is also larger than one frame and must round-trip through
+	// the same fragmentation path.
+	resp := alice.mustOK(protocol.CmdStateGet, struct{}{})
+	var snap protocol.Snapshot
+	if err := protocol.Decode(resp, &snap); err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Solvers) != 6000 || len(snap.Slots) != 3000 {
+		t.Fatalf("state.get snapshot = %d solvers, %d slots", len(snap.Solvers), len(snap.Slots))
+	}
+}
+
+func TestLoginLimiterAllowsTeamConcurrency(t *testing.T) {
+	l := newLoginLimiter(8, 16, time.Minute, time.Minute)
+	for i := 0; i < 16; i++ {
+		if ok, _ := l.begin("ip"); !ok {
+			t.Fatalf("login %d rejected with no failures", i+1)
+		}
+	}
+	if ok, _ := l.begin("ip"); ok {
+		t.Fatal("concurrency cap was not enforced")
+	}
+	for i := 0; i < 16; i++ {
+		l.success("ip")
+	}
+	for i := 0; i < 8; i++ {
+		if ok, _ := l.begin("ip"); !ok {
+			t.Fatalf("valid login %d blocked after all successes", i+1)
+		}
 	}
 }

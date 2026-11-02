@@ -21,13 +21,13 @@
 ### 2.1 客户端 → 服务端
 
 ```json
-{"t":"hello","d":{"version":1,"nick":"alice","nonce":"<base64 32B>","client":"ctfbb-client/1.0.0"}}
+{"t":"hello","d":{"version":2,"nick":"alice","nonce":"<base64 32B>","client":"ctfbb-client/1.1.0"}}
 ```
 
 ### 2.2 服务端 → 客户端
 
 ```json
-{"t":"challenge","d":{"version":1,"server":"队内黑板","salt":"<base64 16B>","nonce":"<base64 32B>","iterations":210000}}
+{"t":"challenge","d":{"version":2,"server":"队内黑板","salt":"<base64 16B>","nonce":"<base64 32B>","iterations":210000}}
 ```
 
 每次连接使用新的随机 salt 和 server nonce，不能跨连接预计算。
@@ -37,7 +37,7 @@
 ```text
 master = PBKDF2-HMAC-SHA256(password, salt, iterations, 32)
 proof  = HMAC-SHA256(master,
-            "ctfbb-auth-v1" || field("client") || field("1") ||
+            "ctfbb-auth-v1" || field("client") || field("2") ||
             field(nick) || field(nonceC) || field(nonceS))
 ```
 
@@ -54,7 +54,7 @@ proof  = HMAC-SHA256(master,
 服务端用同样的方式计算 `field("server")` 的 HMAC，并返回：
 
 ```json
-{"t":"welcome","d":{"version":1,"server":"队内黑板","you":"alice","proof":"<base64 32B>"}}
+{"t":"welcome","d":{"version":2,"server":"队内黑板","you":"alice","proof":"<base64 32B>"}}
 ```
 
 客户端必须验证服务端 proof，否则断开。之后双方派生方向独立的会话密钥：
@@ -93,6 +93,19 @@ nonce (12B) || AES-256-GCM ciphertext || tag (16B)
 - 重放、重排、丢帧、方向反射都会导致认证失败并断开。
 - 单帧明文上限 1 MiB；超过断开。
 - 帧内是 UTF-8 JSON 信封。
+
+### 分片
+
+单个逻辑消息（例如大快照）可以拆成多个帧发送，每帧仍是 1 MiB 以内的加密帧：
+
+```json
+{"t":"frag","id":"f1","seq":0,"total":4,"d":"<base64 of a 640 KiB chunk>"}
+```
+
+- `d` 是 640 KiB 原始块的 base64（约 854 KiB JSON）；整帧仍小于 1 MiB。
+- 接收端按 `id/seq/total` 重组；乱序、混入其它消息会断开；若 30 秒没有下一片，下一次收到分片时会按超时处理。
+- 服务端接收客户端消息上限 4 MiB，客户端接收服务端消息上限 64 MiB；这些只是传输内存边界，不是状态条数上限。
+- 快照再大也不会因为 1 MiB 帧限制而登录失败；未分片的普通消息保持原样，不带 `frag` 包装。
 
 ## 4. 信封
 
@@ -144,7 +157,7 @@ nonce (12B) || AES-256-GCM ciphertext || tag (16B)
 - `activity`：最近 100 条动态
 - `board`：已解/总题、容器位占用、在线操作员、服务器时间
 
-writeup 内容不放进快照，避免大块内容挤占单帧；编辑/查看时用 `solver.get` 单独取。
+writeup 内容不放进快照，正常情况快照很小；快照超过 1 MiB 时会自动走分片传输，不会丢数据。编辑/查看 writeup 时用 `solver.get` 单独取。
 
 ## 6. 命令
 

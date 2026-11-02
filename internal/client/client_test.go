@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -15,9 +16,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/guaidao2/ctf-blackboard/internal/model"
 	"github.com/guaidao2/ctf-blackboard/internal/protocol"
 	"github.com/guaidao2/ctf-blackboard/internal/secure"
 	"github.com/guaidao2/ctf-blackboard/internal/server"
+	"github.com/guaidao2/ctf-blackboard/internal/store"
 )
 
 const testPassword = "correct-horse-battery-staple"
@@ -555,5 +558,72 @@ func TestBridgeRejectsNonLoopbackUI(t *testing.T) {
 	}
 	if _, err := b.Start(); err == nil {
 		t.Fatal("non-loopback GUI was accepted without --allow-remote-ui")
+	}
+}
+
+func TestClientHandlesFragmentedSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	settings := model.Settings{ServerName: "large", SlotLimit: 1000, TotalChallenges: 10000}
+	bd, st, _, err := store.Open(dir, settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	long := strings.Repeat("x", 80)
+	for i := 0; i < 5000; i++ {
+		st.Solvers = append(st.Solvers, &model.Solver{
+			ID: fmt.Sprintf("s%d", i), Challenge: long, Nick: fmt.Sprintf("operator-%d", i),
+			CreatedAt: now, UpdatedAt: now,
+		})
+	}
+	for i := 0; i < 1000; i++ {
+		st.Slots = append(st.Slots, &model.Slot{
+			ID: fmt.Sprintf("r%d", i), Challenge: long, Owner: "operator",
+			Status: model.SlotReleased, CreatedAt: now, ReleasedAt: now,
+		})
+	}
+	if err := bd.Save(st); err != nil {
+		t.Fatal(err)
+	}
+
+	srv, err := server.New(server.Config{
+		Listen:          "127.0.0.1:0",
+		DataDir:         dir,
+		Password:        testPassword,
+		ServerName:      "large",
+		SlotLimit:       1000,
+		TotalChallenges: 10000,
+		Logger:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := srv.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Close(ctx)
+	})
+
+	cli, err := Dial(context.Background(), Config{
+		URL: info.URL, Pin: info.Pin, Nick: "alice", Password: testPassword,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cli.Close()
+	raw, err := cli.Request(protocol.CmdStateGet, struct{}{}, 15*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snap protocol.Snapshot
+	if err := json.Unmarshal(raw, &snap); err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Solvers) != 5000 || len(snap.Slots) != 1000 {
+		t.Fatalf("fragmented snapshot = %d solvers, %d slots", len(snap.Solvers), len(snap.Slots))
 	}
 }

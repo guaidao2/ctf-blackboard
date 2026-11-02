@@ -41,7 +41,7 @@ func newHub(cfg Config, st *model.State, storer *store.Store) *Hub {
 		clients:      map[*Client]struct{}{},
 		byNick:       map[string]*Client{},
 		kickCooldown: map[string]time.Time{},
-		limiter:      newLoginLimiter(8, 5*time.Minute, 5*time.Minute),
+		limiter:      newLoginLimiter(8, 32, 5*time.Minute, 5*time.Minute),
 	}
 }
 

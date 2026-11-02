@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-var Version = "1.0.0"
+var Version = "1.1.0"
 
 // Config is the server's startup configuration. The one shared password is
 // deliberately kept out of structs that get logged.

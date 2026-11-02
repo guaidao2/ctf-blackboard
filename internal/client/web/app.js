@@ -708,6 +708,9 @@ function handleEvent(name, data) {
       updateStatus();
       toast(`你被 ${data.by || "操作员"} 踢出：${data.reason || ""}`, "error");
       break;
+    case "server.error":
+      toast(data.message || "服务器错误", "error");
+      break;
   }
 }
 

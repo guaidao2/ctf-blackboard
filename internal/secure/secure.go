@@ -27,7 +27,7 @@ import (
 const (
 	// ProtocolVersion is bound into every authentication proof so an attacker
 	// cannot downgrade a session across incompatible protocol revisions.
-	ProtocolVersion = 1
+	ProtocolVersion = 2
 
 	// DefaultIterations is the PBKDF2 work factor for online logins.
 	DefaultIterations = 210_000
@@ -47,7 +47,8 @@ const (
 	// FrameOverhead is nonce + tag.
 	FrameOverhead = NonceLen + TagLen
 
-	// MaxFrameSize bounds a single decrypted protocol frame (1 MiB).
+	// MaxFrameSize bounds a single decrypted protocol frame (1 MiB). Larger
+	// logical messages are split by protocol.Split into multiple frames.
 	MaxFrameSize = 1 << 20
 
 	// DirectionClientToServer and DirectionServerToClient are bound into frame

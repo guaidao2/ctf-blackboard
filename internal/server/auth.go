@@ -69,9 +69,15 @@ func (h *Hub) login(conn *websocket.Conn, r *http.Request) error {
 		return errors.New("客户端随机数无效")
 	}
 
-	if ok, wait := h.limiter.allow(ip); !ok {
+	if ok, wait := h.limiter.begin(ip); !ok {
 		return fmt.Errorf("登录尝试过多，请 %d 秒后再试", int(wait.Seconds())+1)
 	}
+	settled := false
+	defer func() {
+		if !settled {
+			h.limiter.cancel(ip)
+		}
+	}()
 
 	// Do not reveal whether a nickname is online or kicked before the HMAC
 	// proof has been verified. Only the server-closed state is checked here.
@@ -131,10 +137,12 @@ func (h *Hub) login(conn *websocket.Conn, r *http.Request) error {
 	expected := secure.ClientProof(master, nick, clientNonce, serverNonce)
 	if !secure.VerifyMAC(expected, proof) {
 		h.limiter.fail(ip)
+		settled = true
 		time.Sleep(350 * time.Millisecond)
 		return errors.New("密码错误")
 	}
 	h.limiter.success(ip)
+	settled = true
 
 	if rem := h.kickRemaining(nick); rem > 0 {
 		return fmt.Errorf("该昵称刚被踢出，请 %d 秒后再试", int(rem.Seconds())+1)
@@ -259,29 +267,35 @@ func remoteIP(r *http.Request) string {
 
 type loginBucket struct {
 	failures     int
+	inFlight     int
 	windowStart  time.Time
 	blockedUntil time.Time
 }
 
 type loginLimiter struct {
-	mu        sync.Mutex
-	max       int
-	window    time.Duration
-	block     time.Duration
-	buckets   map[string]*loginBucket
-	lastSweep time.Time
+	mu            sync.Mutex
+	maxFailures   int
+	maxConcurrent int
+	window        time.Duration
+	block         time.Duration
+	buckets       map[string]*loginBucket
+	lastSweep     time.Time
 }
 
-func newLoginLimiter(max int, window, block time.Duration) *loginLimiter {
+func newLoginLimiter(maxFailures, maxConcurrent int, window, block time.Duration) *loginLimiter {
 	return &loginLimiter{
-		max:     max,
-		window:  window,
-		block:   block,
-		buckets: map[string]*loginBucket{},
+		maxFailures:   maxFailures,
+		maxConcurrent: maxConcurrent,
+		window:        window,
+		block:         block,
+		buckets:       map[string]*loginBucket{},
 	}
 }
 
-func (l *loginLimiter) allow(ip string) (bool, time.Duration) {
+// begin reserves one attempt before the expensive PBKDF2/HMAC work. Failure
+// budget and in-flight concurrency are separate: a team behind one NAT can
+// have several valid logins at once, while wrong passwords are still capped.
+func (l *loginLimiter) begin(ip string) (bool, time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now()
@@ -289,14 +303,20 @@ func (l *loginLimiter) allow(ip string) (bool, time.Duration) {
 
 	b := l.buckets[ip]
 	if b == nil {
-		return true, 0
+		b = &loginBucket{windowStart: now}
+		l.buckets[ip] = b
 	}
 	if now.Before(b.blockedUntil) {
 		return false, time.Until(b.blockedUntil)
 	}
 	if now.Sub(b.windowStart) > l.window {
-		delete(l.buckets, ip)
+		b.failures = 0
+		b.windowStart = now
 	}
+	if b.inFlight >= l.maxConcurrent {
+		return false, time.Second
+	}
+	b.inFlight++
 	return true, 0
 }
 
@@ -309,12 +329,15 @@ func (l *loginLimiter) fail(ip string) {
 		b = &loginBucket{windowStart: now}
 		l.buckets[ip] = b
 	}
+	if b.inFlight > 0 {
+		b.inFlight--
+	}
 	if now.Sub(b.windowStart) > l.window {
 		b.failures = 0
 		b.windowStart = now
 	}
 	b.failures++
-	if b.failures >= l.max {
+	if b.failures >= l.maxFailures {
 		b.failures = 0
 		b.windowStart = now
 		b.blockedUntil = now.Add(l.block)
@@ -324,7 +347,33 @@ func (l *loginLimiter) fail(ip string) {
 func (l *loginLimiter) success(ip string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	delete(l.buckets, ip)
+	b := l.buckets[ip]
+	if b == nil {
+		return
+	}
+	if b.inFlight > 0 {
+		b.inFlight--
+	}
+	b.failures = 0
+	if b.inFlight == 0 && !time.Now().Before(b.blockedUntil) {
+		delete(l.buckets, ip)
+	}
+}
+
+// cancel releases a reservation that never reached the proof check.
+func (l *loginLimiter) cancel(ip string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	b := l.buckets[ip]
+	if b == nil {
+		return
+	}
+	if b.inFlight > 0 {
+		b.inFlight--
+	}
+	if b.inFlight == 0 && b.failures == 0 && !time.Now().Before(b.blockedUntil) {
+		delete(l.buckets, ip)
+	}
 }
 
 func (l *loginLimiter) sweepLocked(now time.Time) {
@@ -333,7 +382,7 @@ func (l *loginLimiter) sweepLocked(now time.Time) {
 	}
 	l.lastSweep = now
 	for ip, b := range l.buckets {
-		if now.After(b.blockedUntil) && now.Sub(b.windowStart) > l.window {
+		if b.inFlight == 0 && now.After(b.blockedUntil) && now.Sub(b.windowStart) > l.window {
 			delete(l.buckets, ip)
 		}
 	}

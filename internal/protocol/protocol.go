@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	Version = 1
+	Version = 2
 
 	TypeHello     = "hello"
 	TypeChallenge = "challenge"
@@ -33,6 +33,7 @@ const (
 	EventSettings     = "settings"
 	EventActivity     = "activity"
 	EventKicked       = "kicked"
+	EventError        = "server.error"
 )
 
 // Commands.
