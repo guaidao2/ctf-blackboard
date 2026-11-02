@@ -1,0 +1,19 @@
+# build / runtime artifacts
+/bin/
+/dist/
+/scratch/
+/data/
+*.exe
+*.test
+*.out
+*.zip
+*.tar.gz
+checksums.txt
+
+# local editor / OS noise
+.DS_Store
+Thumbs.db
+*.log
+
+# host workspace metadata
+.reasonix/

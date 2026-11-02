@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>CTF Blackboard</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="boot" class="boot">正在连接本地客户端…</div>
+
+  <section id="loginView" class="login-view hidden">
+    <div class="login-card">
+      <div class="brand"><span class="brand-mark">▚</span> CTF BLACKBOARD</div>
+      <p class="sub">比赛协同黑板 · 单密码 · 通信全程加密</p>
+      <form id="loginForm" autocomplete="off">
+        <div class="info-import">
+          <button id="importInfoBtn" class="ghost" type="button">导入 server-info.txt</button>
+          <input id="infoFile" type="file" accept=".txt,text/plain" hidden>
+          <span id="infoStatus" class="info-status">还没导入服务器信息</span>
+        </div>
+        <label>服务器地址
+          <input id="server" name="server" placeholder="wss://10.0.0.5:8443/ws" autocomplete="off" spellcheck="false" required>
+        </label>
+        <label>昵称
+          <input id="nick" name="nick" placeholder="你的昵称" maxlength="24" autocomplete="off" required>
+        </label>
+        <label>共享密码
+          <input id="password" name="password" type="password" autocomplete="current-password" required>
+        </label>
+        <details id="advancedInfo" class="advanced">
+          <summary>高级：手动填写证书指纹</summary>
+          <label>证书指纹
+            <input id="pin" name="pin" placeholder="AA:BB:CC:…" autocomplete="off" spellcheck="false">
+          </label>
+          <p class="hint small">正常情况不用填。把服务端生成的 <code>server-info.txt</code> 放到客户端同目录，或点上面的“导入 server-info.txt”，地址和指纹会自动带进来。</p>
+        </details>
+        <button id="loginBtn" class="primary wide" type="submit">进入黑板</button>
+        <div id="loginError" class="form-error hidden"></div>
+      </form>
+      <details class="hint">
+        <summary>服务器信息从哪来？</summary>
+        <p>可以直接填服务器地址：首次连接会像 SSH 一样显示 SHA-256 指纹，确认后记住，下次自动校验。</p>
+        <p>服务端启动后会生成 <code>server-info.txt</code>，里面有 <code>url=</code> 和 <code>pin=</code>；把它放在客户端同目录或点“导入”，就能免提示。指纹用于防止中间人。</p>
+      </details>
+      <div class="local-note">页面只监听 127.0.0.1；密码只保存在本地客户端内存里，不写入磁盘。</div>
+    </div>
+  </section>
+
+  <div id="appView" class="app hidden">
+    <header class="topbar">
+      <div class="brand small"><span class="brand-mark">▚</span> CTF BLACKBOARD</div>
+      <div class="statusline">
+        <span id="connPill" class="pill offline">离线</span>
+        <span id="serverName" class="server-name"></span>
+      </div>
+      <div class="stats">
+        <div class="stat"><span id="statSolved">0</span><small>已解</small></div>
+        <div class="stat"><span id="statTotal">0</span><small>总题</small></div>
+        <div class="stat"><span id="statSlots">0/0</span><small>容器位</small></div>
+        <div class="stat"><span id="statOnline">0</span><small>在线</small></div>
+      </div>
+      <div class="top-actions">
+        <button id="soundBtn" class="ghost icon" type="button" title="提示音：开" aria-pressed="true">🔔</button>
+        <button id="exportBtn" class="ghost" type="button" title="导出全部 writeup">导出 writeup</button>
+        <button id="settingsBtn" class="ghost" type="button" title="题目总数、容器上限、公告">设置</button>
+        <button id="logoutBtn" class="ghost" type="button" title="断开当前登录">断开</button>
+      </div>
+    </header>
+
+    <div id="offlineBanner" class="banner hidden">
+      <span id="offlineText"></span>
+      <span class="banner-hint">客户端会自动重连，已缓存的内容仍可查看。</span>
+    </div>
+
+    <main class="layout">
+      <aside class="sidebar">
+        <section class="panel">
+          <div class="panel-head"><h2>在线操作员</h2><span id="onlineCount" class="count">0</span></div>
+          <ul id="operatorList" class="operator-list"></ul>
+        </section>
+        <section class="panel grow">
+          <div class="panel-head"><h2>动态</h2></div>
+          <ol id="activityList" class="activity-list"></ol>
+        </section>
+      </aside>
+
+      <section class="main-panel">
+        <nav class="tabs">
+          <button class="tab active" data-tab="solvers" type="button">战果墙 <span id="solverCount" class="badge">0</span></button>
+          <button class="tab" data-tab="chat" type="button">聊天 <span id="chatBadge" class="badge hidden">0</span></button>
+          <button class="tab" data-tab="slots" type="button">容器位 <span id="slotBadge" class="badge">0/0</span></button>
+        </nav>
+
+        <section id="tab-solvers" class="tab-pane">
+          <div class="pane-head">
+            <div>
+              <h1>战果墙</h1>
+              <p>谁交了哪道题的 flag。多人同题只记最终提交人，不搞内部排名。</p>
+            </div>
+            <button id="addSolverBtn" class="primary" type="button">+ 记录战果</button>
+          </div>
+          <div class="toolbar">
+            <input id="solverSearch" class="search" placeholder="搜索题目 / 解题人" autocomplete="off">
+          </div>
+          <div id="solverGrid" class="card-grid"></div>
+          <div id="solverEmpty" class="empty hidden">还没有战果。解出来一题就记一条。</div>
+        </section>
+
+        <section id="tab-chat" class="tab-pane hidden">
+          <div class="pane-head">
+            <div>
+              <h1>聊天</h1>
+              <p>全队一个频道。战果、容器位、踢人会自动播报。</p>
+            </div>
+          </div>
+          <div id="chatList" class="chat-list"></div>
+          <form id="chatForm" class="chat-form" autocomplete="off">
+            <input id="chatInput" placeholder="说点什么，Enter 发送" maxlength="2000" autocomplete="off">
+            <button class="primary" type="submit">发送</button>
+          </form>
+        </section>
+
+        <section id="tab-slots" class="tab-pane hidden">
+          <div class="pane-head">
+            <div>
+              <h1>容器位</h1>
+              <p>记录谁开了哪道题的实例。满了就拒绝新的，避免把别人顶掉。</p>
+            </div>
+            <button id="addSlotBtn" class="primary" type="button">+ 占用容器位</button>
+          </div>
+          <div class="quota">
+            <progress id="quotaProgress" max="1" value="0"></progress>
+            <span id="quotaText"></span>
+          </div>
+          <div id="slotGrid" class="card-grid"></div>
+          <div id="slotEmpty" class="empty hidden">当前没有占用中的容器位。</div>
+          <details class="history">
+            <summary>已释放记录 <span id="releasedCount">0</span></summary>
+            <div id="releasedList" class="history-list"></div>
+          </details>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <div id="modalRoot"></div>
+  <div id="toastRoot" class="toast-root" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>
